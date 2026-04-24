@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+{% block title %}Report — ExamFace{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Attendance Report</h1>
+
+<div class="panel">
+  <div class="form-group">
+    <label>Select Class</label>
+    <select id="report-class" onchange="onClassChange()">
+      <option value="">-- Select class --</option>
+      {% for c in classes %}
+      <option value="{{ c.id }}">{{ c.course_code }} — {{ c.course_name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+</div>
+
+<div id="filter-panel" class="panel" style="display:none">
+  <h2>Filter by Date & Time</h2>
+  <div class="form">
+    <div class="form-group">
+      <label>Date</label>
+      <input type="date" id="filter-date" onchange="loadReport()">
+    </div>
+    <div class="filter-time-row">
+      <div class="form-group">
+        <label>Start Time</label>
+        <input type="time" id="filter-start" onchange="loadReport()">
+      </div>
+      <div class="form-group">
+        <label>End Time</label>
+        <input type="time" id="filter-end" onchange="loadReport()">
+      </div>
+    </div>
+    <button class="btn btn-secondary" onclick="clearFilters()">
+      Clear Filters
+    </button>
+  </div>
+</div>
+
+<div id="report-content" style="display:none">
+
+  <div class="summary-bar">
+    <div class="summary-card summary-total">
+      <div class="summary-num" id="s-total">0</div>
+      <div class="summary-label">Total</div>
+    </div>
+    <div class="summary-card summary-present">
+      <div class="summary-num" id="s-present">0</div>
+      <div class="summary-label">Present</div>
+    </div>
+    <div class="summary-card summary-absent">
+      <div class="summary-num" id="s-absent">0</div>
+      <div class="summary-label">Absent</div>
+    </div>
+  </div>
+
+  <div class="panel" id="print-area">
+
+    <div class="print-header">
+      <h2 class="print-university">University of Lagos</h2>
+      <p class="print-sub">Exam Attendance Record</p>
+      <div class="print-meta">
+        <span id="print-course"></span>
+        <span id="print-lecturer"></span>
+        <span id="print-date"></span>
+        <span id="print-time-range"></span>
+        <span id="print-generated"></span>
+      </div>
+    </div>
+
+    <div class="report-toolbar">
+      <h2 id="report-title">Attendance List</h2>
+      <button class="btn btn-secondary" onclick="window.print()">Print</button>
+    </div>
+
+    <div class="table-wrapper">
+      <table class="report-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Name</th>
+            <th>Matric</th>
+            <th>Status</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody id="report-tbody"></tbody>
+      </table>
+    </div>
+
+    <div class="print-footer">
+      <div class="print-sign">
+        <div class="sign-line"></div>
+        <p>Invigilator's Signature</p>
+      </div>
+      <div class="print-sign">
+        <div class="sign-line"></div>
+        <p>Date</p>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="panel" id="unknowns-panel" style="display:none">
+    <h2>Unknown Faces Flagged</h2>
+    <div id="unknowns-grid" class="unknowns-grid"></div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentClassId = null;
+
+function onClassChange() {
+  const classId = document.getElementById("report-class").value;
+  if (!classId) return;
+  currentClassId = classId;
+
+  document.getElementById("filter-panel").style.display   = "block";
+  document.getElementById("report-content").style.display = "none";
+
+  const today = new Date().toISOString().split("T")[0];
+  document.getElementById("filter-date").value = today;
+
+  loadReport();
+}
+
+function clearFilters() {
+  document.getElementById("filter-date").value  = "";
+  document.getElementById("filter-start").value = "";
+  document.getElementById("filter-end").value   = "";
+  loadReport();
+}
+
+async function loadReport() {
+  if (!currentClassId) return;
+
+  const date      = document.getElementById("filter-date").value;
+  const startTime = document.getElementById("filter-start").value;
+  const endTime   = document.getElementById("filter-end").value;
+
+  let url = `/api/report/${currentClassId}/filtered?`;
+  if (date)      url += `date=${date}&`;
+  if (startTime) url += `start_time=${startTime}&`;
+  if (endTime)   url += `end_time=${endTime}&`;
+
+  const res  = await fetch(url);
+  const data = await res.json();
+
+  document.getElementById("report-content").style.display = "block";
+
+  document.getElementById("s-total").textContent   = data.summary.total   || 0;
+  document.getElementById("s-present").textContent = data.summary.present || 0;
+  document.getElementById("s-absent").textContent  = data.summary.absent  || 0;
+
+  const title = `${data.class.course_code} — ${data.class.course_name}`;
+  document.getElementById("report-title").textContent   = title;
+  document.getElementById("print-course").textContent   =
+    `Course: ${data.class.course_code} — ${data.class.course_name}`;
+  document.getElementById("print-lecturer").textContent =
+    `Lecturer: ${data.class.lecturer || "—"}`;
+  document.getElementById("print-date").textContent =
+    `Date: ${date || "All dates"}`;
+  document.getElementById("print-time-range").textContent =
+    (startTime || endTime)
+      ? `Time range: ${startTime || "00:00"} — ${endTime || "23:59"}`
+      : "";
+  document.getElementById("print-generated").textContent =
+    `Generated: ${new Date().toLocaleString("en-GB", {
+      hour12: false, day:"2-digit", month:"2-digit",
+      year:"numeric", hour:"2-digit", minute:"2-digit"
+    })}`;
+
+  const tbody = document.getElementById("report-tbody");
+  tbody.innerHTML = "";
+
+  if (data.students.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5"
+      style="text-align:center;color:#999;padding:20px">
+      No records found for selected filters</td></tr>`;
+  } else {
+    data.students.forEach((s, i) => {
+      const tr = document.createElement("tr");
+      tr.className = s.status === "present" ? "row-present" : "row-absent";
+
+      let timeStr = "—";
+      if (s.marked_at) {
+        const fixed = s.marked_at.replace(" ", "T");
+        timeStr = new Date(fixed).toLocaleTimeString("en-GB", {
+          hour12: false, hour: "2-digit", minute: "2-digit"
+        });
+      }
+
+      tr.innerHTML = `
+        <td>${i + 1}</td>
+        <td>${s.name}</td>
+        <td>${s.matric}</td>
+        <td><span class="badge badge-${s.status}">${s.status}</span></td>
+        <td>${timeStr}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  const unknownsPanel = document.getElementById("unknowns-panel");
+  const unknownsGrid  = document.getElementById("unknowns-grid");
+  if (data.unknowns.length > 0) {
+    unknownsPanel.style.display = "block";
+    unknownsGrid.innerHTML = data.unknowns.map(u => `
+      <div class="unknown-card">
+        <img src="/static/${u.photo_path}" alt="Unknown">
+        <span>${new Date(u.flagged_at.replace(" ","T")).toLocaleTimeString("en-GB", {
+          hour12: false, hour:"2-digit", minute:"2-digit"
+        })}</span>
+      </div>
+    `).join("");
+  } else {
+    unknownsPanel.style.display = "none";
+  }
+}
+</script>
+{% endblock %}

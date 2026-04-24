@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}ExamFace — Home{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h1>ExamFace</h1>
+  <p class="hero-sub">Facial recognition exam attendance system</p>
+
+  <div class="card-grid">
+
+    <a href="/admin" class="card">
+      <div class="card-icon">👤</div>
+      <h2>Admin</h2>
+      <p>Register students and create exam classes</p>
+    </a>
+
+    <a href="/scan" class="card">
+      <div class="card-icon">📷</div>
+      <h2>Scan</h2>
+      <p>Take attendance using facial recognition</p>
+    </a>
+
+    <a href="/report" class="card">
+      <div class="card-icon">📋</div>
+      <h2>Report</h2>
+      <p>View and print attendance records</p>
+    </a>
+
+  </div>
+</div>
+{% endblock %}

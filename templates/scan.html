@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block title %}Scan — ExamFace{% endblock %}
+
+{% block content %}
+<h1 class="page-title">Exam Scanner</h1>
+
+<div class="panel">
+  <div class="form-group">
+    <label>Select Class</label>
+    <select id="class-select">
+      <option value="">-- Select class --</option>
+      {% for c in classes %}
+      <option value="{{ c.id }}">{{ c.course_code }} — {{ c.course_name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="scan-mode-bar">
+    <label class="radio-label">
+      <input type="radio" name="scan-mode" value="manual" checked
+             onchange="setScanMode('manual')">
+      Manual (tap to snap)
+    </label>
+    <label class="radio-label">
+      <input type="radio" name="scan-mode" value="auto"
+             onchange="setScanMode('auto')">
+      Auto countdown
+    </label>
+  </div>
+
+  <div class="btn-row">
+    <button class="btn btn-primary" id="start-btn" onclick="startScan()">Start Scan</button>
+    <button class="btn btn-danger"  id="stop-btn"  onclick="stopScan()" disabled>Stop Scan</button>
+  </div>
+</div>
+
+<div id="scan-panel" class="panel" style="display:none">
+
+  <div class="scan-status-bar">
+    <span id="session-label" class="session-label"></span>
+    <span id="present-count" class="count-badge">0 present</span>
+  </div>
+
+  <!-- Live camera preview from phone -->
+  <div class="camera-container">
+    <video id="camera-feed" autoplay playsinline muted></video>
+    <canvas id="snap-canvas" style="display:none"></canvas>
+  </div>
+
+  <!-- Manual mode -->
+  <div id="manual-mode">
+    <button class="btn btn-snap" id="snap-btn" onclick="doSnap()">
+      📷 Snap Face
+    </button>
+  </div>
+
+  <!-- Auto countdown mode -->
+  <div id="auto-mode" style="display:none">
+    <div id="countdown-display" class="countdown"></div>
+    <button class="btn btn-snap" id="auto-btn" onclick="startCountdown()">
+      Start Countdown
+    </button>
+  </div>
+
+  <div id="snap-result" class="snap-result"></div>
+
+  <div class="scan-log-header">Recent scans</div>
+  <div id="scan-log" class="scan-log"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let activeClassId  = null;
+let scanMode       = "manual";
+let presentCount   = 0;
+let countdownTimer = null;
+let videoStream    = null;
+
+function setScanMode(mode) {
+  scanMode = mode;
+  document.getElementById("manual-mode").style.display = mode === "manual" ? "block" : "none";
+  document.getElementById("auto-mode").style.display   = mode === "auto"   ? "block" : "none";
+}
+
+async function startScan() {
+  const classId = document.getElementById("class-select").value;
+  if (!classId) { alert("Please select a class first"); return; }
+
+  // Ask browser to open the camera
+  try {
+    videoStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment", width: 640, height: 480 }
+    });
+    document.getElementById("camera-feed").srcObject = videoStream;
+  } catch (err) {
+    alert("Could not open camera: " + err.message);
+    return;
+  }
+
+  const res  = await fetch(`/api/scan/start/${classId}`, { method: "POST" });
+  const data = await res.json();
+  if (!data.success) { alert(data.error); return; }
+
+  activeClassId = classId;
+  presentCount  = 0;
+
+  document.getElementById("start-btn").disabled        = true;
+  document.getElementById("stop-btn").disabled         = false;
+  document.getElementById("class-select").disabled     = true;
+  document.getElementById("scan-panel").style.display  = "block";
+  document.getElementById("session-label").textContent =
+    document.getElementById("class-select").selectedOptions[0].text;
+  document.getElementById("present-count").textContent = "0 present";
+  document.getElementById("scan-log").innerHTML        = "";
+}
+
+async function stopScan() {
+  if (countdownTimer) clearInterval(countdownTimer);
+
+  if (videoStream) {
+    videoStream.getTracks().forEach(t => t.stop());
+    videoStream = null;
+  }
+
+  await fetch("/api/scan/stop", { method: "POST" });
+
+  activeClassId = null;
+  document.getElementById("start-btn").disabled       = false;
+  document.getElementById("stop-btn").disabled        = true;
+  document.getElementById("class-select").disabled    = false;
+  document.getElementById("scan-panel").style.display = "none";
+}
+
+function captureFrame() {
+  const video  = document.getElementById("camera-feed");
+  const canvas = document.getElementById("snap-canvas");
+  canvas.width  = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext("2d").drawImage(video, 0, 0);
+  return new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.92));
+}
+
+async function doSnap() {
+  const btn = document.getElementById("snap-btn");
+  btn.disabled    = true;
+  btn.textContent = "Processing...";
+
+  const blob = await captureFrame();
+  const fd   = new FormData();
+  fd.append("photo", blob, "snap.jpg");
+
+  const res  = await fetch("/api/scan/snap", { method: "POST", body: fd });
+  const data = await res.json();
+  showSnapResult(data);
+
+  btn.disabled    = false;
+  btn.textContent = "📷 Snap Face";
+}
+
+function startCountdown() {
+  const btn     = document.getElementById("auto-btn");
+  const display = document.getElementById("countdown-display");
+  btn.disabled  = true;
+  let count     = 3;
+  display.textContent = count;
+
+  countdownTimer = setInterval(async () => {
+    count--;
+    if (count > 0) {
+      display.textContent = count;
+    } else {
+      clearInterval(countdownTimer);
+      display.textContent = "📷";
+
+      const blob = await captureFrame();
+      const fd   = new FormData();
+      fd.append("photo", blob, "snap.jpg");
+
+      const res  = await fetch("/api/scan/snap", { method: "POST", body: fd });
+      const data = await res.json();
+      showSnapResult(data);
+
+      setTimeout(() => {
+        display.textContent = "";
+        btn.disabled = false;
+      }, 2000);
+    }
+  }, 1000);
+}
+
+function showSnapResult(data) {
+  const resultDiv = document.getElementById("snap-result");
+  const logDiv    = document.getElementById("scan-log");
+
+  let cls = "result-unknown";
+  if (data.result === "match")   cls = "result-match";
+  if (data.result === "no_face") cls = "result-noface";
+
+  resultDiv.className   = `snap-result ${cls}`;
+  resultDiv.textContent = data.message;
+
+  if (data.result === "match") {
+    presentCount++;
+    document.getElementById("present-count").textContent = `${presentCount} present`;
+    const entry = document.createElement("div");
+    entry.className   = "log-entry log-present";
+    entry.textContent = `✓ ${data.name} (${data.matric}) — ${new Date().toLocaleTimeString()}`;
+    logDiv.prepend(entry);
+  }
+
+  if (data.result === "unknown") {
+    const entry = document.createElement("div");
+    entry.className   = "log-entry log-unknown";
+    entry.textContent = `? Unknown face — ${new Date().toLocaleTimeString()}`;
+    logDiv.prepend(entry);
+  }
+}
+</script>
+{% endblock %}
