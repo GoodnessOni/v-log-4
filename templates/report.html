@@ -7,7 +7,7 @@
 <div class="panel">
   <div class="form-group">
     <label>Select Class</label>
-    <select id="report-class" onchange="onClassChange()">
+    <select id="report-class" onchange="loadSessions()">
       <option value="">-- Select class --</option>
       {% for c in classes %}
       <option value="{{ c.id }}">{{ c.course_code }} — {{ c.course_name }}</option>
@@ -16,30 +16,20 @@
   </div>
 </div>
 
-<div id="filter-panel" class="panel" style="display:none">
-  <h2>Filter by Date & Time</h2>
-  <div class="form">
-    <div class="form-group">
-      <label>Date</label>
-      <input type="date" id="filter-date" onchange="loadReport()">
-    </div>
-    <div class="filter-time-row">
-      <div class="form-group">
-        <label>Start Time</label>
-        <input type="time" id="filter-start" onchange="loadReport()">
-      </div>
-      <div class="form-group">
-        <label>End Time</label>
-        <input type="time" id="filter-end" onchange="loadReport()">
-      </div>
-    </div>
-    <button class="btn btn-secondary" onclick="clearFilters()">
-      Clear Filters
-    </button>
+<!-- SESSIONS LIST -->
+<div id="sessions-panel" style="display:none">
+  <div class="panel">
+    <h2>Exam Sessions — tap to view report</h2>
+    <div id="sessions-list" class="sessions-list"></div>
   </div>
 </div>
 
+<!-- SESSION REPORT -->
 <div id="report-content" style="display:none">
+
+  <div class="report-back-btn">
+    <button class="btn btn-secondary" onclick="backToSessions()">← Back to Sessions</button>
+  </div>
 
   <div class="summary-bar">
     <div class="summary-card summary-total">
@@ -65,7 +55,7 @@
         <span id="print-course"></span>
         <span id="print-lecturer"></span>
         <span id="print-date"></span>
-        <span id="print-time-range"></span>
+        <span id="print-time"></span>
         <span id="print-generated"></span>
       </div>
     </div>
@@ -115,60 +105,64 @@
 <script>
 let currentClassId = null;
 
-function onClassChange() {
+async function loadSessions() {
   const classId = document.getElementById("report-class").value;
   if (!classId) return;
   currentClassId = classId;
 
-  document.getElementById("filter-panel").style.display   = "block";
-  document.getElementById("report-content").style.display = "none";
+  document.getElementById("report-content").style.display  = "none";
+  document.getElementById("sessions-panel").style.display  = "block";
 
-  const today = new Date().toISOString().split("T")[0];
-  document.getElementById("filter-date").value = today;
-
-  loadReport();
-}
-
-function clearFilters() {
-  document.getElementById("filter-date").value  = "";
-  document.getElementById("filter-start").value = "";
-  document.getElementById("filter-end").value   = "";
-  loadReport();
-}
-
-async function loadReport() {
-  if (!currentClassId) return;
-
-  const date      = document.getElementById("filter-date").value;
-  const startTime = document.getElementById("filter-start").value;
-  const endTime   = document.getElementById("filter-end").value;
-
-  let url = `/api/report/${currentClassId}/filtered?`;
-  if (date)      url += `date=${date}&`;
-  if (startTime) url += `start_time=${startTime}&`;
-  if (endTime)   url += `end_time=${endTime}&`;
-
-  const res  = await fetch(url);
+  const res  = await fetch(`/api/classes/${classId}/sessions/list`);
   const data = await res.json();
+  const list = document.getElementById("sessions-list");
 
+  if (!data.sessions || data.sessions.length === 0) {
+    list.innerHTML = "<p class='empty-msg'>No sessions found for this class yet.</p>";
+    return;
+  }
+
+  list.innerHTML = data.sessions.map(s => `
+    <div class="session-card" onclick="loadSessionReport(${s.id})">
+      <div class="session-card-info">
+        <strong>${s.date}</strong>
+        <span>${s.start_time} — ${s.end_time}</span>
+      </div>
+      <div class="session-card-stats">
+        <span class="badge badge-present">${s.present_count} present</span>
+        <span class="badge badge-absent">${s.total_count - s.present_count} absent</span>
+      </div>
+      <div class="class-card-arrow">›</div>
+    </div>
+  `).join("");
+}
+
+function backToSessions() {
+  document.getElementById("report-content").style.display = "none";
+  document.getElementById("sessions-panel").style.display = "block";
+}
+
+async function loadSessionReport(sessionId) {
+  document.getElementById("sessions-panel").style.display = "none";
   document.getElementById("report-content").style.display = "block";
+
+  const res  = await fetch(`/api/report/session/${sessionId}`);
+  const data = await res.json();
 
   document.getElementById("s-total").textContent   = data.summary.total   || 0;
   document.getElementById("s-present").textContent = data.summary.present || 0;
   document.getElementById("s-absent").textContent  = data.summary.absent  || 0;
 
   const title = `${data.class.course_code} — ${data.class.course_name}`;
-  document.getElementById("report-title").textContent   = title;
-  document.getElementById("print-course").textContent   =
+  document.getElementById("report-title").textContent  = title;
+  document.getElementById("print-course").textContent  =
     `Course: ${data.class.course_code} — ${data.class.course_name}`;
   document.getElementById("print-lecturer").textContent =
     `Lecturer: ${data.class.lecturer || "—"}`;
   document.getElementById("print-date").textContent =
-    `Date: ${date || "All dates"}`;
-  document.getElementById("print-time-range").textContent =
-    (startTime || endTime)
-      ? `Time range: ${startTime || "00:00"} — ${endTime || "23:59"}`
-      : "";
+    `Date: ${data.session.date}`;
+  document.getElementById("print-time").textContent =
+    `Time: ${data.session.start_time} — ${data.session.end_time}`;
   document.getElementById("print-generated").textContent =
     `Generated: ${new Date().toLocaleString("en-GB", {
       hour12: false, day:"2-digit", month:"2-digit",
@@ -181,7 +175,7 @@ async function loadReport() {
   if (data.students.length === 0) {
     tbody.innerHTML = `<tr><td colspan="5"
       style="text-align:center;color:#999;padding:20px">
-      No records found for selected filters</td></tr>`;
+      No attendance recorded for this session yet</td></tr>`;
   } else {
     data.students.forEach((s, i) => {
       const tr = document.createElement("tr");
@@ -189,10 +183,10 @@ async function loadReport() {
 
       let timeStr = "—";
       if (s.marked_at) {
-        const fixed = s.marked_at.replace(" ", "T");
-        timeStr = new Date(fixed).toLocaleTimeString("en-GB", {
-          hour12: false, hour: "2-digit", minute: "2-digit"
-        });
+        timeStr = new Date(s.marked_at.replace(" ","T"))
+          .toLocaleTimeString("en-GB", {
+            hour12: false, hour:"2-digit", minute:"2-digit"
+          });
       }
 
       tr.innerHTML = `
@@ -208,14 +202,15 @@ async function loadReport() {
 
   const unknownsPanel = document.getElementById("unknowns-panel");
   const unknownsGrid  = document.getElementById("unknowns-grid");
-  if (data.unknowns.length > 0) {
+  if (data.unknowns && data.unknowns.length > 0) {
     unknownsPanel.style.display = "block";
     unknownsGrid.innerHTML = data.unknowns.map(u => `
       <div class="unknown-card">
         <img src="/static/${u.photo_path}" alt="Unknown">
-        <span>${new Date(u.flagged_at.replace(" ","T")).toLocaleTimeString("en-GB", {
-          hour12: false, hour:"2-digit", minute:"2-digit"
-        })}</span>
+        <span>${new Date(u.flagged_at.replace(" ","T"))
+          .toLocaleTimeString("en-GB", {
+            hour12: false, hour:"2-digit", minute:"2-digit"
+          })}</span>
       </div>
     `).join("");
   } else {

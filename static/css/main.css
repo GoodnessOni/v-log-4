@@ -620,3 +620,48 @@ body {
   .report-table th { padding: 6px 8px !important; }
   .roster-grid { grid-template-columns: repeat(5, 1fr) !important; }
 }
+
+/* ─── SESSIONS ───────────────────────────────────────── */
+.session-info { margin: 10px 0; }
+.session-badge {
+  display: flex;
+  gap: 16px;
+  background: #eafaf1;
+  color: #1e8449;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  flex-wrap: wrap;
+}
+.sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.session-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 12px;
+  border: 1px solid #eee;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.session-card:active { background: #f4f6f9; }
+.session-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+}
+.session-card-info strong { font-size: 15px; }
+.session-card-info span   { font-size: 13px; color: #666; }
+.session-card-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+}
+.report-back-btn { margin-bottom: 14px; }

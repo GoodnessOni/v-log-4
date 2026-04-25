@@ -7,12 +7,17 @@
 <div class="panel">
   <div class="form-group">
     <label>Select Class</label>
-    <select id="class-select">
+    <select id="class-select" onchange="checkActiveSession()">
       <option value="">-- Select class --</option>
       {% for c in classes %}
       <option value="{{ c.id }}">{{ c.course_code }} — {{ c.course_name }}</option>
       {% endfor %}
     </select>
+  </div>
+
+  <div id="session-info" class="session-info" style="display:none"></div>
+  <div id="no-session-msg" class="snap-result result-noface" style="display:none">
+    No active session for this class right now. Ask admin to create a session first.
   </div>
 
   <div class="scan-mode-bar">
@@ -29,32 +34,32 @@
   </div>
 
   <div class="btn-row">
-    <button class="btn btn-primary" id="start-btn" onclick="startScan()">Start Scan</button>
-    <button class="btn btn-danger"  id="stop-btn"  onclick="stopScan()" disabled>Stop Scan</button>
+    <button class="btn btn-primary" id="start-btn" onclick="startScan()" disabled>
+      Start Scan
+    </button>
+    <button class="btn btn-danger" id="stop-btn" onclick="stopScan()" disabled>
+      Stop Scan
+    </button>
   </div>
 </div>
 
 <div id="scan-panel" class="panel" style="display:none">
-
   <div class="scan-status-bar">
     <span id="session-label" class="session-label"></span>
     <span id="present-count" class="count-badge">0 present</span>
   </div>
 
-  <!-- Live camera preview from phone -->
   <div class="camera-container">
     <video id="camera-feed" autoplay playsinline muted></video>
     <canvas id="snap-canvas" style="display:none"></canvas>
   </div>
 
-  <!-- Manual mode -->
   <div id="manual-mode">
     <button class="btn btn-snap" id="snap-btn" onclick="doSnap()">
       📷 Snap Face
     </button>
   </div>
 
-  <!-- Auto countdown mode -->
   <div id="auto-mode" style="display:none">
     <div id="countdown-display" class="countdown"></div>
     <button class="btn btn-snap" id="auto-btn" onclick="startCountdown()">
@@ -77,6 +82,40 @@ let presentCount   = 0;
 let countdownTimer = null;
 let videoStream    = null;
 
+async function checkActiveSession() {
+  const classId = document.getElementById("class-select").value;
+  const info    = document.getElementById("session-info");
+  const noMsg   = document.getElementById("no-session-msg");
+  const startBtn = document.getElementById("start-btn");
+
+  if (!classId) {
+    info.style.display   = "none";
+    noMsg.style.display  = "none";
+    startBtn.disabled    = true;
+    return;
+  }
+
+  const res  = await fetch(`/api/sessions/${classId}/active`);
+  const data = await res.json();
+
+  if (data.success) {
+    const s = data.session;
+    info.style.display  = "block";
+    noMsg.style.display = "none";
+    startBtn.disabled   = false;
+    info.innerHTML = `
+      <div class="session-badge">
+        <span>📅 ${s.date}</span>
+        <span>🕐 ${s.start_time} — ${s.end_time}</span>
+      </div>
+    `;
+  } else {
+    info.style.display  = "none";
+    noMsg.style.display = "block";
+    startBtn.disabled   = true;
+  }
+}
+
 function setScanMode(mode) {
   scanMode = mode;
   document.getElementById("manual-mode").style.display = mode === "manual" ? "block" : "none";
@@ -87,7 +126,6 @@ async function startScan() {
   const classId = document.getElementById("class-select").value;
   if (!classId) { alert("Please select a class first"); return; }
 
-  // Ask browser to open the camera
   try {
     videoStream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "environment", width: 640, height: 480 }
@@ -109,20 +147,20 @@ async function startScan() {
   document.getElementById("stop-btn").disabled         = false;
   document.getElementById("class-select").disabled     = true;
   document.getElementById("scan-panel").style.display  = "block";
+
+  const s = data.session;
   document.getElementById("session-label").textContent =
-    document.getElementById("class-select").selectedOptions[0].text;
+    `${document.getElementById("class-select").selectedOptions[0].text} | ${s.date} ${s.start_time}–${s.end_time}`;
   document.getElementById("present-count").textContent = "0 present";
   document.getElementById("scan-log").innerHTML        = "";
 }
 
 async function stopScan() {
   if (countdownTimer) clearInterval(countdownTimer);
-
   if (videoStream) {
     videoStream.getTracks().forEach(t => t.stop());
     videoStream = null;
   }
-
   await fetch("/api/scan/stop", { method: "POST" });
 
   activeClassId = null;
@@ -130,6 +168,7 @@ async function stopScan() {
   document.getElementById("stop-btn").disabled        = true;
   document.getElementById("class-select").disabled    = false;
   document.getElementById("scan-panel").style.display = "none";
+  checkActiveSession();
 }
 
 function captureFrame() {
@@ -205,14 +244,14 @@ function showSnapResult(data) {
     document.getElementById("present-count").textContent = `${presentCount} present`;
     const entry = document.createElement("div");
     entry.className   = "log-entry log-present";
-    entry.textContent = `✓ ${data.name} (${data.matric}) — ${new Date().toLocaleTimeString()}`;
+    entry.textContent = `✓ ${data.name} (${data.matric}) — ${new Date().toLocaleTimeString("en-GB", {hour12:false})}`;
     logDiv.prepend(entry);
   }
 
   if (data.result === "unknown") {
     const entry = document.createElement("div");
     entry.className   = "log-entry log-unknown";
-    entry.textContent = `? Unknown face — ${new Date().toLocaleTimeString()}`;
+    entry.textContent = `? Unknown face — ${new Date().toLocaleTimeString("en-GB", {hour12:false})}`;
     logDiv.prepend(entry);
   }
 }

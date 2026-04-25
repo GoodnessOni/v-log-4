@@ -58,6 +58,39 @@
   </div>
 
   <div class="panel">
+    <h2>Create Exam Session</h2>
+    <div class="form">
+      <div class="form-group">
+        <label>Select Class</label>
+        <select id="session-class-id">
+          <option value="">-- Select a class --</option>
+          {% for c in classes %}
+          <option value="{{ c.id }}">{{ c.course_code }} — {{ c.course_name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Exam Date</label>
+        <input type="date" id="session-date">
+      </div>
+      <div class="filter-time-row">
+        <div class="form-group">
+          <label>Start Time</label>
+          <input type="time" id="session-start">
+        </div>
+        <div class="form-group">
+          <label>End Time</label>
+          <input type="time" id="session-end">
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="createSession()">
+        Create Session
+      </button>
+    </div>
+    <div id="session-msg" class="msg"></div>
+  </div>
+  
+  <div class="panel">
     <h2>Existing Classes — tap to view students</h2>
     <div class="class-list">
       {% for c in classes %}
@@ -331,5 +364,32 @@ function closeRoster(switchToClasses = true) {
     document.querySelectorAll(".tab-btn")[1].classList.add("active");
   }
 }
+
+async function createSession() {
+  const msg        = document.getElementById("session-msg");
+  const classId    = document.getElementById("session-class-id").value;
+  const date       = document.getElementById("session-date").value;
+  const startTime  = document.getElementById("session-start").value;
+  const endTime    = document.getElementById("session-end").value;
+
+  if (!classId || !date || !startTime || !endTime) {
+    showMsg(msg, "Please fill in all fields", "error"); return;
+  }
+
+  const res  = await fetch("/api/sessions/create", {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({
+      class_id:   parseInt(classId),
+      date:       date,
+      start_time: startTime,
+      end_time:   endTime
+    })
+  });
+  const data = await res.json();
+  showMsg(msg, data.message || data.error,
+          data.success ? "success" : "error");
+}
+
 </script>
 {% endblock %}

@@ -13,6 +13,12 @@ WAT = timezone(timedelta(hours=1))
 def nigeria_now():
     return datetime.now(WAT).strftime("%Y-%m-%d %H:%M:%S")
 
+def nigeria_today():
+    return datetime.now(WAT).strftime("%Y-%m-%d")
+
+def nigeria_time():
+    return datetime.now(WAT).strftime("%H:%M")
+
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
@@ -54,7 +60,9 @@ def get_all_persons():
 
 def get_person_by_id(person_id):
     conn = get_connection()
-    row  = conn.execute("SELECT * FROM person WHERE id=?", (person_id,)).fetchone()
+    row  = conn.execute(
+        "SELECT * FROM person WHERE id=?", (person_id,)
+    ).fetchone()
     conn.close()
     return dict(row) if row else None
 
@@ -65,7 +73,6 @@ def get_all_encodings():
         "SELECT id, name, matric, encoding FROM person"
     ).fetchall()
     conn.close()
-
     result = []
     for r in rows:
         encoding = np.array(json.loads(r["encoding"]))
@@ -110,15 +117,114 @@ def get_class_by_id(class_id):
     return dict(row) if row else None
 
 
+def get_class_roster(class_id):
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT DISTINCT p.id, p.name, p.matric, p.photo_path
+           FROM person p
+           WHERE p.id IN (
+               SELECT DISTINCT person_id FROM attendance WHERE class_id=?
+           )
+           ORDER BY p.name""",
+        (class_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ─── SESSIONS ─────────────────────────────────────────────
+
+def create_session(class_id, date, start_time, end_time):
+    """Create a new exam session for a class."""
+    conn = get_connection()
+    cursor = conn.execute(
+        """INSERT INTO session (class_id, date, start_time, end_time)
+           VALUES (?,?,?,?)""",
+        (class_id, date, start_time, end_time)
+    )
+    session_id = cursor.lastrowid
+
+    # Auto-assign all students in this class to this session as absent
+    persons = conn.execute(
+        """SELECT DISTINCT person_id FROM attendance
+           WHERE class_id=?""",
+        (class_id,)
+    ).fetchall()
+
+    for p in persons:
+        conn.execute(
+            """INSERT OR IGNORE INTO attendance
+               (person_id, class_id, session_id, status)
+               VALUES (?,?,?,'absent')""",
+            (p["person_id"], class_id, session_id)
+        )
+
+    conn.commit()
+    conn.close()
+    return session_id
+
+
+def get_sessions_for_class(class_id):
+    """Get all sessions for a class, newest first."""
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT s.*,
+             (SELECT COUNT(*) FROM attendance a
+              WHERE a.session_id=s.id AND a.status='present') as present_count,
+             (SELECT COUNT(*) FROM attendance a
+              WHERE a.session_id=s.id) as total_count
+           FROM session s
+           WHERE s.class_id=?
+           ORDER BY s.date DESC, s.start_time DESC""",
+        (class_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_session_by_id(session_id):
+    conn = get_connection()
+    row  = conn.execute(
+        "SELECT * FROM session WHERE id=?", (session_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_active_session(class_id):
+    """
+    Find a session for this class that is active right now
+    based on today's date and current time.
+    """
+    today = nigeria_today()
+    now   = nigeria_time()
+    conn  = get_connection()
+    row   = conn.execute(
+        """SELECT * FROM session
+           WHERE class_id=?
+           AND date=?
+           AND start_time <= ?
+           AND end_time >= ?""",
+        (class_id, today, now, now)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 # ─── ATTENDANCE ───────────────────────────────────────────
 
 def assign_all_students_to_class(class_id):
+    """Add every registered student to a class roster."""
     conn    = get_connection()
     persons = conn.execute("SELECT id FROM person").fetchall()
+
+    # We just need one attendance record to track class membership
+    # Session-specific records are created when sessions start
     for p in persons:
         conn.execute(
-            """INSERT OR IGNORE INTO attendance (person_id, class_id, status)
-               VALUES (?, ?, 'absent')""",
+            """INSERT OR IGNORE INTO attendance
+               (person_id, class_id, session_id, status)
+               VALUES (?,?, -1, 'roster')""",
             (p["id"], class_id)
         )
     count = len(persons)
@@ -131,40 +237,11 @@ def assign_students_to_class(class_id, person_ids):
     conn = get_connection()
     for pid in person_ids:
         conn.execute(
-            """INSERT OR IGNORE INTO attendance (person_id, class_id, status)
-               VALUES (?, ?, 'absent')""",
+            """INSERT OR IGNORE INTO attendance
+               (person_id, class_id, session_id, status)
+               VALUES (?,?, -1, 'roster')""",
             (pid, class_id)
         )
-    conn.commit()
-    conn.close()
-
-def get_class_roster(class_id):
-    """
-    Return all students assigned to a class
-    regardless of attendance status.
-    """
-    conn = get_connection()
-    rows = conn.execute(
-        """SELECT p.id, p.name, p.matric, p.photo_path
-           FROM attendance a
-           JOIN person p ON p.id = a.person_id
-           WHERE a.class_id = ?
-           ORDER BY p.name""",
-        (class_id,)
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def mark_present(person_id, class_id, marked_at=None):
-    if marked_at is None:
-        marked_at = nigeria_now()
-    conn = get_connection()
-    conn.execute(
-        """UPDATE attendance SET status='present', marked_at=?
-           WHERE person_id=? AND class_id=?""",
-        (marked_at, person_id, class_id)
-    )
     conn.commit()
     conn.close()
 
@@ -172,18 +249,35 @@ def mark_present(person_id, class_id, marked_at=None):
 def is_student_in_class(person_id, class_id):
     conn = get_connection()
     row  = conn.execute(
-        "SELECT id FROM attendance WHERE person_id=? AND class_id=?",
+        """SELECT id FROM attendance
+           WHERE person_id=? AND class_id=?""",
         (person_id, class_id)
     ).fetchone()
     conn.close()
     return row is not None
 
 
-def flag_unknown(class_id, photo_path):
+def mark_present(person_id, class_id, session_id, marked_at=None):
+    if marked_at is None:
+        marked_at = nigeria_now()
     conn = get_connection()
     conn.execute(
-        "INSERT INTO unknown_flag (class_id, photo_path) VALUES (?,?)",
-        (class_id, photo_path)
+        """INSERT INTO attendance (person_id, class_id, session_id, status, marked_at)
+           VALUES (?,?,?,'present',?)
+           ON CONFLICT(person_id, session_id) DO UPDATE SET
+           status='present', marked_at=excluded.marked_at""",
+        (person_id, class_id, session_id, marked_at)
+    )
+    conn.commit()
+    conn.close()
+
+
+def flag_unknown(class_id, session_id, photo_path):
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO unknown_flag (class_id, session_id, photo_path)
+           VALUES (?,?,?)""",
+        (class_id, session_id, photo_path)
     )
     conn.commit()
     conn.close()
@@ -191,79 +285,45 @@ def flag_unknown(class_id, photo_path):
 
 # ─── REPORTS ──────────────────────────────────────────────
 
-def get_attendance_report(class_id):
+def get_session_report(session_id):
+    """Full attendance list for one session."""
     conn = get_connection()
     rows = conn.execute(
         """SELECT p.name, p.matric, p.photo_path,
                   a.status, a.marked_at
            FROM attendance a
            JOIN person p ON p.id = a.person_id
-           WHERE a.class_id = ?
+           WHERE a.session_id = ?
+           AND a.status != 'roster'
            ORDER BY p.name""",
-        (class_id,)
+        (session_id,)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
-def get_filtered_report(class_id, date=None, start_time=None, end_time=None):
-    """
-    Get attendance filtered by date and time range.
-    Absent students always show regardless of filter.
-    """
-    conn = get_connection()
-
-    query = """
-        SELECT p.name, p.matric, p.photo_path,
-               a.status, a.marked_at
-        FROM attendance a
-        JOIN person p ON p.id = a.person_id
-        WHERE a.class_id = ?
-        AND (
-            a.status = 'absent'
-            OR (
-                1=1
-    """
-    params = [class_id]
-
-    if date:
-        query += " AND DATE(a.marked_at) = ?"
-        params.append(date)
-
-    if start_time and date:
-        query += " AND TIME(a.marked_at) >= ?"
-        params.append(start_time + ":00")
-
-    if end_time and date:
-        query += " AND TIME(a.marked_at) <= ?"
-        params.append(end_time + ":00")
-
-    query += ")) ORDER BY p.name"
-
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
-
-
-def get_attendance_summary(class_id):
+def get_session_summary(session_id):
     conn = get_connection()
     row  = conn.execute(
         """SELECT
              COUNT(*) as total,
              SUM(CASE WHEN status='present' THEN 1 ELSE 0 END) as present,
              SUM(CASE WHEN status='absent'  THEN 1 ELSE 0 END) as absent
-           FROM attendance WHERE class_id=?""",
-        (class_id,)
+           FROM attendance
+           WHERE session_id=? AND status != 'roster'""",
+        (session_id,)
     ).fetchone()
     conn.close()
     return dict(row)
 
 
-def get_unknown_flags(class_id):
+def get_unknown_flags(session_id):
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM unknown_flag WHERE class_id=? ORDER BY flagged_at DESC",
-        (class_id,)
+        """SELECT * FROM unknown_flag
+           WHERE session_id=?
+           ORDER BY flagged_at DESC""",
+        (session_id,)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

@@ -1,5 +1,4 @@
 import os
-import threading
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from flask import (Flask, render_template, request,
@@ -13,9 +12,12 @@ from database.db import (
     add_person, get_all_persons, get_person_by_id,
     add_class, get_all_classes, get_class_by_id,
     assign_all_students_to_class, assign_students_to_class,
-    mark_present, flag_unknown, is_student_in_class,
-    get_attendance_report, get_attendance_summary, get_unknown_flags,
-    get_all_encodings, get_filtered_report
+    get_class_roster, is_student_in_class,
+    create_session, get_sessions_for_class,
+    get_session_by_id, get_active_session,
+    mark_present, flag_unknown,
+    get_session_report, get_session_summary, get_unknown_flags,
+    get_all_encodings
 )
 from model.face_engine import (
     encode_face_from_bytes,
@@ -36,8 +38,9 @@ def nigeria_timestamp():
 
 
 # ─── SESSION STATE ────────────────────────────────────────
-_active_class_id = None
-_known_people    = []
+_active_class_id   = None
+_active_session_id = None
+_known_people      = []
 
 
 # ─── PAGES ────────────────────────────────────────────────
@@ -141,48 +144,101 @@ def api_assign_students(class_id):
         "success": True,
         "message": f"{len(person_ids)} students assigned"
     })
+
+
 @app.route("/api/classes/<int:class_id>/roster")
 def api_class_roster(class_id):
-    """Return all students assigned to a class."""
-    from database.db import get_class_roster
     return jsonify({
         "class":    get_class_by_id(class_id),
         "students": get_class_roster(class_id)
     })
 
-# ─── API: SCAN ────────────────────────────────────────────
 
-@app.route("/api/scan/start/<int:class_id>", methods=["POST"])
-def api_start_scan(class_id):
-    global _active_class_id, _known_people
+# ─── API: SESSIONS ────────────────────────────────────────
+
+@app.route("/api/sessions/create", methods=["POST"])
+def api_create_session():
+    """Admin creates a session before exam day."""
+    data       = request.get_json() or {}
+    class_id   = data.get("class_id")
+    date       = data.get("date")
+    start_time = data.get("start_time")
+    end_time   = data.get("end_time")
+
+    if not all([class_id, date, start_time, end_time]):
+        return jsonify({"error": "class_id, date, start_time and end_time are required"}), 400
 
     cls = get_class_by_id(class_id)
     if not cls:
         return jsonify({"error": "Class not found"}), 404
 
-    _active_class_id = class_id
-    _known_people    = get_all_encodings()
+    session_id = create_session(class_id, date, start_time, end_time)
+    return jsonify({
+        "success":    True,
+        "session_id": session_id,
+        "message":    f"Session created for {cls['course_code']} on {date} ({start_time}–{end_time})"
+    })
+
+
+@app.route("/api/classes/<int:class_id>/sessions")
+def api_class_sessions(class_id):
+    return jsonify({
+        "class":    get_class_by_id(class_id),
+        "sessions": get_sessions_for_class(class_id)
+    })
+
+
+@app.route("/api/sessions/<int:class_id>/active")
+def api_active_session(class_id):
+    session = get_active_session(class_id)
+    if session:
+        return jsonify({"success": True, "session": session})
+    return jsonify({"success": False, "message": "No active session for this class right now"})
+
+
+# ─── API: SCAN ────────────────────────────────────────────
+
+@app.route("/api/scan/start/<int:class_id>", methods=["POST"])
+def api_start_scan(class_id):
+    global _active_class_id, _active_session_id, _known_people
+
+    cls = get_class_by_id(class_id)
+    if not cls:
+        return jsonify({"error": "Class not found"}), 404
+
+    # Check for active session
+    session = get_active_session(class_id)
+    if not session:
+        return jsonify({
+            "error": "No active session for this class right now. Ask admin to create a session first."
+        }), 400
+
+    _active_class_id   = class_id
+    _active_session_id = session["id"]
+    _known_people      = get_all_encodings()
 
     return jsonify({
         "success":       True,
-        "message":       f"Scan session started for {cls['course_code']}",
+        "message":       f"Scan started for {cls['course_code']}",
+        "session":       session,
         "student_count": len(_known_people)
     })
 
 
 @app.route("/api/scan/stop", methods=["POST"])
 def api_stop_scan():
-    global _active_class_id, _known_people
-    _active_class_id = None
-    _known_people    = []
+    global _active_class_id, _active_session_id, _known_people
+    _active_class_id   = None
+    _active_session_id = None
+    _known_people      = []
     return jsonify({"success": True, "message": "Scan session ended"})
 
 
 @app.route("/api/scan/snap", methods=["POST"])
 def api_snap():
-    global _active_class_id, _known_people
+    global _active_class_id, _active_session_id, _known_people
 
-    if _active_class_id is None:
+    if _active_class_id is None or _active_session_id is None:
         return jsonify({"error": "No active scan session"}), 400
 
     photo = request.files.get("photo")
@@ -206,7 +262,8 @@ def api_snap():
                 "result":  "unknown",
                 "message": f"Face recognised but {match['name']} is not enrolled in this class"
             })
-        mark_present(match["person_id"], _active_class_id, nigeria_now())
+        mark_present(match["person_id"], _active_class_id,
+                     _active_session_id, nigeria_now())
         return jsonify({
             "result":  "match",
             "message": f"Present: {match['name']} ({match['matric']})",
@@ -215,8 +272,8 @@ def api_snap():
         })
     else:
         photo_path = save_unknown_snapshot_bytes(
-                         img_bytes, _active_class_id, nigeria_timestamp())
-        flag_unknown(_active_class_id, photo_path)
+            img_bytes, _active_class_id, nigeria_timestamp())
+        flag_unknown(_active_class_id, _active_session_id, photo_path)
         return jsonify({
             "result":  "unknown",
             "message": "Face not recognised — snapshot saved"
@@ -225,27 +282,26 @@ def api_snap():
 
 # ─── API: REPORTS ─────────────────────────────────────────
 
-@app.route("/api/report/<int:class_id>")
-def api_report(class_id):
+@app.route("/api/classes/<int:class_id>/sessions/list")
+def api_sessions_list(class_id):
+    """Return all sessions for a class with their attendance summary."""
     return jsonify({
         "class":    get_class_by_id(class_id),
-        "summary":  get_attendance_summary(class_id),
-        "students": get_attendance_report(class_id),
-        "unknowns": get_unknown_flags(class_id)
+        "sessions": get_sessions_for_class(class_id)
     })
 
 
-@app.route("/api/report/<int:class_id>/filtered")
-def api_report_filtered(class_id):
-    date       = request.args.get("date")
-    start_time = request.args.get("start_time")
-    end_time   = request.args.get("end_time")
-
+@app.route("/api/report/session/<int:session_id>")
+def api_session_report(session_id):
+    session = get_session_by_id(session_id)
+    if not session:
+        return jsonify({"error": "Session not found"}), 404
     return jsonify({
-        "class":    get_class_by_id(class_id),
-        "summary":  get_attendance_summary(class_id),
-        "students": get_filtered_report(class_id, date, start_time, end_time),
-        "unknowns": get_unknown_flags(class_id)
+        "session":  session,
+        "class":    get_class_by_id(session["class_id"]),
+        "summary":  get_session_summary(session_id),
+        "students": get_session_report(session_id),
+        "unknowns": get_unknown_flags(session_id)
     })
 
 
